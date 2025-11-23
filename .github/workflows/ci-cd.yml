@@ -12,6 +12,9 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Install yamllint
+        run: sudo apt-get update && sudo apt-get install -y yamllint
+
       - name: Check YAML syntax
         run: |
           find . -name '*.yml' -o -name '*.yaml' | xargs -I {} yamllint {}
@@ -21,6 +24,7 @@ jobs:
     needs: [lint]
     steps:
       - uses: actions/checkout@v4
+
       - name: Set up QEMU (for multiarch, optional)
         uses: docker/setup-qemu-action@v2
 
@@ -51,32 +55,26 @@ jobs:
           exit-code: '1'   # fail if vulnerability found; change to '0' to warn only
 
   deploy:
-  runs-on: self-hosted
-  needs: [build-and-scan]
-  if: github.ref == 'refs/heads/main'
-  steps:
-    - uses: actions/checkout@v4
+    # run deploy job on your self-hosted runner (label 'self-hosted' must match runner label)
+    runs-on: [self-hosted]
+    needs: [build-and-scan]
+    if: github.ref == 'refs/heads/main'
+    steps:
+      - uses: actions/checkout@v4
 
-    - name: Ensure deploy dir exists and copy files
-      run: |
-        # GITHUB_WORKSPACE points to the checked-out repo
-        DEPLOY_DIR="$HOME/monitoring"
-        mkdir -p "$DEPLOY_DIR"
-        # use rsync to copy workspace contents to deploy dir, exclude secrets
-        if ! command -v rsync >/dev/null 2>&1; then
-          echo "rsync not found — please install rsync on the runner"
-          exit 1
-        fi
-        rsync -av --delete --exclude '.git' --exclude '.env' "$GITHUB_WORKSPACE"/ "$DEPLOY_DIR"/
+      - name: Ensure deploy dir exists and copy files
+        run: |
+          DEPLOY_DIR="$HOME/monitoring"
+          mkdir -p "$DEPLOY_DIR"
+          if ! command -v rsync >/dev/null 2>&1; then
+            echo "rsync not found — please install rsync on the runner"
+            exit 1
+          fi
+          rsync -av --delete --exclude '.git' --exclude '.env' "$GITHUB_WORKSPACE"/ "$DEPLOY_DIR"/
 
-    - name: Pull images and restart compose stack
-      run: |
-        cd ~/monitoring
-        # Make sure docker & docker compose available
-        if ! command -v docker >/dev/null 2>&1; then echo "docker not found"; exit 1; fi
-        if ! docker compose version >/dev/null 2>&1; then
-          echo "docker compose v2 not found; try 'docker compose' or install compose v2"; 
-          # optionally fallback to docker-compose binary:
-        fi
-        docker compose pull || true
-        docker compose up -d --remove-orphans
+      - name: Pull images and restart compose stack
+        run: |
+          cd ~/monitoring
+          if ! command -v docker >/dev/null 2>&1; then echo "docker not found"; exit 1; fi
+          docker compose pull || true
+          docker compose up -d --remove-orphans
