@@ -1,0 +1,71 @@
+name: CI/CD Monitoring Stack
+
+on:
+  push:
+    branches: [ develop, main ]
+  pull_request:
+    branches: [ develop ]
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check YAML syntax
+        run: |
+          find . -name '*.yml' -o -name '*.yaml' | xargs -I {} yamllint {}
+
+  build-and-scan:
+    runs-on: ubuntu-latest
+    needs: [lint]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up QEMU (for multiarch, optional)
+        uses: docker/setup-qemu-action@v2
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v2
+
+      - name: Login to DockerHub
+        uses: docker/login-action@v2
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Build alert-telegram image
+        run: |
+          docker build -t ${{ secrets.DOCKERHUB_USERNAME }}/alert-telegram:${{ github.sha }} ./alert-telegram
+          docker tag ${{ secrets.DOCKERHUB_USERNAME }}/alert-telegram:${{ github.sha }} ${{ secrets.DOCKERHUB_USERNAME }}/alert-telegram:latest
+
+      - name: Push image
+        run: |
+          docker push ${{ secrets.DOCKERHUB_USERNAME }}/alert-telegram:${{ github.sha }}
+          docker push ${{ secrets.DOCKERHUB_USERNAME }}/alert-telegram:latest
+
+      - name: Run Trivy scan
+        uses: aquasecurity/trivy-action@v1
+        with:
+          image-ref: ${{ secrets.DOCKERHUB_USERNAME }}/alert-telegram:latest
+          format: 'table'
+          exit-code: '1'   # fail if vulnerability found; change to '0' to warn only
+
+  deploy:
+    runs-on: ubuntu-latest
+    needs: [build-and-scan]
+    if: github.ref == 'refs/heads/main'   # only deploy from main
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup SSH
+        uses: webfactory/ssh-agent@v0.8.1
+        with:
+          ssh-private-key: ${{ secrets.DEPLOY_SSH_PRIVATE_KEY }}
+
+      - name: Sync files to server
+        run: |
+          rsync -av --delete --exclude '.git' --exclude '.env' ./ ${{ secrets.DEPLOY_SSH_USER }}@${{ secrets.DEPLOY_HOST }}:~/monitoring/
+
+      - name: Remote docker compose up
+        run: |
+          ssh ${{ secrets.DEPLOY_SSH_USER }}@${{ secrets.DEPLOY_HOST }} 'cd ~/monitoring && docker compose pull && docker compose up -d --remove-orphans'
